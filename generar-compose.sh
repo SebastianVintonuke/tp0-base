@@ -19,9 +19,10 @@ services:
     entrypoint: python3 /main.py
     environment:
       - PYTHONUNBUFFERED=1
-      - LOGGING_LEVEL=DEBUG
     networks:
       - testing_net
+    volumes:
+      - ./server/config.ini:/config.ini:ro
 " > "$output_file_name"
 
 for ((i=1; i<=clients_number; i++)); do
@@ -31,11 +32,12 @@ for ((i=1; i<=clients_number; i++)); do
     entrypoint: /client
     environment:
       - CLI_ID=$i
-      - CLI_LOG_LEVEL=DEBUG
     networks:
       - testing_net
     depends_on:
       - server
+    volumes:
+      - ./client/config.yaml:/config.yaml:ro
 " >> "$output_file_name"
 done
 
