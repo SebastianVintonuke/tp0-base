@@ -4,6 +4,7 @@ from configparser import ConfigParser
 from common.server import Server
 import logging
 import os
+import signal
 
 
 def initialize_config():
@@ -49,7 +50,15 @@ def main():
 
     # Initialize server and start server loop
     server = Server(port, listen_backlog)
+
+    # Si se recibe una señal SIGTERM despues de reservar el socket en el constructor del servidor,
+    # pero antes de asignar el manejador del SIGTERM, el socket no se libera.
+    # Considero este caso borde un error conocido para mantener la simplicidad del codigo
+    signal.signal(signal.SIGTERM, server.graceful_shutdown)
+
     server.run()
+
+    logging.shutdown()
 
 def initialize_log(logging_level):
     """

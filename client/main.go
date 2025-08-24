@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/op/go-logging"
@@ -90,6 +92,16 @@ func PrintConfig(v *viper.Viper) {
 	)
 }
 
+// InitSignalHandler Registers a signal handler for SIGTERM
+func InitSignalHandler(handler func()) {
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGTERM)
+	go func() {
+		<-signalChannel
+		handler()
+	}()
+}
+
 func main() {
 	v, err := InitConfig()
 	if err != nil {
@@ -111,5 +123,6 @@ func main() {
 	}
 
 	client := common.NewClient(clientConfig)
+	InitSignalHandler(client.GracefulShutdown)
 	client.StartClientLoop()
 }

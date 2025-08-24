@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/op/go-logging"
@@ -21,8 +22,9 @@ type ClientConfig struct {
 
 // Client Entity that encapsulates how
 type Client struct {
-	config ClientConfig
-	conn   net.Conn
+	config     ClientConfig
+	conn       net.Conn
+	wasStopped uint32
 }
 
 // NewClient Initializes a new client receiving the configuration
@@ -54,7 +56,7 @@ func (c *Client) createClientSocket() error {
 func (c *Client) StartClientLoop() {
 	// There is an autoincremental msgID to identify every message sent
 	// Messages if the message amount threshold has not been surpassed
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
+	for msgID := 1; msgID <= c.config.LoopAmount && !c.getWasStopped(); msgID++ {
 		// Create the connection the server in every loop iteration. Send an
 		c.createClientSocket()
 
@@ -66,7 +68,7 @@ func (c *Client) StartClientLoop() {
 			msgID,
 		)
 		msg, err := bufio.NewReader(c.conn).ReadString('\n')
-		c.conn.Close()
+		c.tryClose(c.conn)
 
 		if err != nil {
 			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
@@ -86,4 +88,38 @@ func (c *Client) StartClientLoop() {
 
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+}
+
+// GracefulShutdown Gracefully shutdown the server
+func (c *Client) GracefulShutdown() {
+	log.Infof("action: graceful_shutdown | result: in_progress | client_id: %v", c.config.ID)
+
+	c.setWasStopped()
+	if c.conn != nil {
+		c.tryClose(c.conn)
+	}
+
+	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
+}
+
+func (c *Client) tryClose(aSocket net.Conn) {
+	err := aSocket.Close()
+	if err != nil {
+		log.Errorf("action: close_client_socket | result: fail | client_id: %v | error: %v",
+			c.config.ID,
+			err,
+		)
+		return
+	}
+	log.Infof("action: close_client_socket | result: success | client_id: %v",
+		c.config.ID,
+	)
+}
+
+func (c *Client) setWasStopped() {
+	atomic.StoreUint32(&c.wasStopped, 1)
+}
+
+func (c *Client) getWasStopped() bool {
+	return atomic.LoadUint32(&c.wasStopped) == 1
 }
