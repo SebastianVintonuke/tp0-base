@@ -58,14 +58,12 @@ class Server:
         client socket will also be closed
         """
         try:
-            # TODO: Modify the receive to avoid short-reads
-            msg = self._client_socket.recv(1024).rstrip().decode('utf-8')
+            msg = self.__recv_all().rstrip().decode('utf-8')
             addr = self._client_socket.getpeername()
             logging.info(f'action: receive_message | result: success | ip: {addr[0]} | msg: {msg}')
-            # TODO: Modify the send to avoid short-writes
-            self._client_socket.send("{}\n".format(msg).encode('utf-8'))
+            self.__send_all("{}\n".format(msg).encode('utf-8'))
         except OSError as e:
-            logging.error("action: receive_message | result: fail | error: {e}")
+            logging.error(f"action: receive_message | result: fail | error: {e}")
         finally:
             self.__try_close(self._client_socket, 'client_socket')
 
@@ -88,3 +86,22 @@ class Server:
                 return None  # The server socket was closed by the graceful shutdown
             else:
                 logging.info(f'action: accept_connections | result: fail | error: {e}')
+
+    def __recv_all(self):
+        msg = b''
+        while True:
+            read = self._client_socket.recv(1)
+            if not read:
+                break
+            msg += read
+            if read == b'\n':
+                break
+        return msg
+
+    def __send_all(self, msg):
+        sz = 0
+        while sz < len(msg):
+            written = self._client_socket.send(msg[sz:])
+            if not written:
+                raise BrokenPipeError
+            sz += written
