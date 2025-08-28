@@ -32,14 +32,13 @@ class Server:
         client socket will also be closed
         """
         try:
-            # TODO: Modify the receive to avoid short-reads
-            msg = client_sock.recv(1024).rstrip().decode('utf-8')
+            msg = self.__recv_all(client_sock).rstrip().decode('utf-8')
             addr = client_sock.getpeername()
             logging.info(f'action: receive_message | result: success | ip: {addr[0]} | msg: {msg}')
-            # TODO: Modify the send to avoid short-writes
-            client_sock.send("{}\n".format(msg).encode('utf-8'))
+            msg = "{}\n".format(msg).encode('utf-8')
+            self.__send_all(client_sock, msg)
         except OSError as e:
-            logging.error("action: receive_message | result: fail | error: {e}")
+            logging.error(f"action: receive_message | result: fail | error: {e}")
         finally:
             client_sock.close()
 
@@ -56,3 +55,22 @@ class Server:
         c, addr = self._server_socket.accept()
         logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
         return c
+
+    def __recv_all(self, client_sock):
+        msg = b''
+        while True:
+            read = client_sock.recv(1)
+            if not read:
+                break
+            msg += read
+            if read == b'\n':
+                break
+        return msg
+
+    def __send_all(self, client_sock, msg):
+        sz = 0
+        while sz < len(msg):
+            written = client_sock.send(msg[sz:])
+            if not written:
+                raise BrokenPipeError
+            sz += written
