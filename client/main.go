@@ -6,7 +6,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/op/go-logging"
 	"github.com/pkg/errors"
@@ -36,8 +35,6 @@ func InitConfig() (*viper.Viper, error) {
 	// Add env variables supported
 	v.BindEnv("id")
 	v.BindEnv("server", "address")
-	v.BindEnv("loop", "period")
-	v.BindEnv("loop", "amount")
 	v.BindEnv("log", "level")
 
 	// Try to read configuration from config file. If config file
@@ -47,12 +44,6 @@ func InitConfig() (*viper.Viper, error) {
 	v.SetConfigFile("./config.yaml")
 	if err := v.ReadInConfig(); err != nil {
 		fmt.Printf("Configuration could not be read from config file. Using env variables instead")
-	}
-
-	// Parse time.Duration variables and return an error if those variables cannot be parsed
-
-	if _, err := time.ParseDuration(v.GetString("loop.period")); err != nil {
-		return nil, errors.Wrapf(err, "Could not parse CLI_LOOP_PERIOD env var as time.Duration.")
 	}
 
 	return v, nil
@@ -83,12 +74,40 @@ func InitLogger(logLevel string) error {
 // PrintConfig Print all the configuration parameters of the program.
 // For debugging purposes only
 func PrintConfig(v *viper.Viper) {
-	log.Infof("action: config | result: success | client_id: %s | server_address: %s | loop_amount: %v | loop_period: %v | log_level: %s",
+	log.Infof("action: config | result: success | client_id: %s | server_address: %s | log_level: %s",
 		v.GetString("id"),
 		v.GetString("server.address"),
-		v.GetInt("loop.amount"),
-		v.GetDuration("loop.period"),
 		v.GetString("log.level"),
+	)
+}
+
+// InitBet Function that uses viper library to parse bet parameters.
+func InitBet() (*viper.Viper, error) {
+	v := viper.New()
+
+	v.AutomaticEnv()
+
+	keys := []string{"nombre", "apellido", "documento", "nacimiento", "numero"}
+	for _, key := range keys {
+		err := v.BindEnv(key)
+		if err != nil {
+			return v, errors.Wrapf(err, "Bet %s could not be read from env variables", key)
+		}
+	}
+
+	return v, nil
+}
+
+// PrintBet Print all the bet parameters of the program.
+// For debugging purposes only
+func PrintBet(v *viper.Viper) {
+	log.Infof(
+		"action: bet | result: success | first name: %s | last name: %s | document: %s | birthdate: %s | number: %s",
+		v.GetString("nombre"),
+		v.GetString("apellido"),
+		v.GetString("documento"),
+		v.GetString("nacimiento"),
+		v.GetString("numero"),
 	)
 }
 
@@ -118,11 +137,25 @@ func main() {
 	clientConfig := common.ClientConfig{
 		ServerAddress: v.GetString("server.address"),
 		ID:            v.GetString("id"),
-		LoopAmount:    v.GetInt("loop.amount"),
-		LoopPeriod:    v.GetDuration("loop.period"),
 	}
 
-	client := common.NewClient(clientConfig)
+	bet, err := InitBet()
+	if err != nil {
+		log.Criticalf("%s", err)
+	}
+
+	// Print program bet with debugging purposes
+	PrintBet(bet)
+
+	clientBet := common.Bet{
+		FirstName: bet.GetString("nombre"),
+		LastName:  bet.GetString("apellido"),
+		Document:  bet.GetString("documento"),
+		Birthdate: bet.GetString("nacimiento"),
+		Number:    bet.GetString("numero"),
+	}
+
+	client := common.NewClient(clientConfig, clientBet)
 	InitSignalHandler(client.GracefulShutdown)
-	client.StartClientLoop()
+	client.StartClient()
 }
