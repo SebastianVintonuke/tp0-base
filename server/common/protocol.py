@@ -37,6 +37,12 @@ class Protocol:
             raise ValueError("Value must be an uint8 (0-255)")
         self.__send_all(bytes([uint8]))
 
+    def wait_uint8(self):
+        """
+        Receive a single unsigned byte (0-255) through the socket
+        """
+        return self.__recv_all(1)[0]
+
     def __recv_all(self, n):
         """
         Read exactly n bytes from the socket
