@@ -67,17 +67,29 @@ class Server:
         """
         Read message from a specific client socket and closes the socket
 
-        If a problem arises in the communication with the client, the
-        client socket will also be closed
+        Receives batches of bets until a batch of size 0 is received
+        Each batch is stored and acknowledged
+        If an error occurs, try to send an error code (uint8 = 1)
         """
         try:
-            bet = self.__wait_bet()
-            logging.info(f'action: apuesta_recibida | result: success | agencia: {bet.agency} | nombre: {bet.first_name} | apellido: {bet.last_name} | dni: {bet.document} | nacimiento: {bet.birthdate} | numero: {bet.number}')
-            store_bets([bet])
-            logging.info(f'action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}')
+            total_bets = 0
+            batch_size = self.__wait_batch_size()
+
+            while batch_size != 0:
+                total_bets += batch_size
+                batch = self.__wait_batch(batch_size)
+                logging.info(f"action: apuesta_recibida | result: success | cantidad: {len(batch)}")
+                store_bets(batch)
+                self.__send_ack()
+
+                batch_size = self.__wait_batch_size()
+
             self.__send_ack()
+            logging.info(f"action: apuestas_totales | result: success | cantidad: {total_bets}")
+
         except OSError as e:
-            logging.error(f"action: receive_message | result: fail | error: {e}")
+            self.__try_send_error()
+            logging.error(f"action: apuesta_recibida | result: fail | error: {e}")
         finally:
             closure_to_close = lambda client_socket: self.__try_close(client_socket, 'client_socket')
             self._client_protocol.close_with(closure_to_close)
@@ -117,10 +129,44 @@ class Server:
         number = self._client_protocol.wait_string()
         return Bet(client_id, first_name, last_name, document, birthdate, number)
 
+    def __wait_batch(self, size):
+        """
+        Wait for a batch of bets from the client
+
+        Reads `size` bets from the client connection and returns them as a list.
+        """
+        batch = []
+        for i in range(0, size):
+            bet = self.__wait_bet()
+            batch.append(bet)
+        return batch
+
+    def __wait_batch_size(self):
+        """
+        Wait for the next batch size from the client
+
+        Reads a single uint8 value that specifies the maximum number of bets in the next batch
+        Returns 0 when the client signals EOF
+        """
+        return self._client_protocol.wait_uint8()
+
     def __send_ack(self):
         """
         Send an acknowledgement (uint8 = 0) to the client
 
-        Used to confirm that a bet was received and stored successfully
+        Used to confirm:
+            1. That a batch was received and stored successfully
+            2. That the EOF was received
         """
         self._client_protocol.send_uint8(0)
+
+    def __try_send_error(self):
+        """
+        Attempt to send an error code (uint8 = 1) to the client
+
+        Used to notify the client that an error occurred in the protocol
+        """
+        try:
+            self._client_protocol.send_uint8(1)
+        except OSError as e:
+            logging.info(f'action: send_nack | result: fail | error: {e}')

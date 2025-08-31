@@ -26,6 +26,7 @@ func (p *Protocol) CloseWith(closureToClose func(net.Conn)) {
 // SendString Sends a string through the socket
 // First, sends 2 bytes (big endian) that indicate the length, then sends the payload of that length
 // Returns an error if the string is too long or fails
+// [ size (2 bytes) ][ data (size bytes) ]
 func (p *Protocol) SendString(s string) error {
 	payloadSize := len(s)
 	if payloadSize > 0xFFFF {
@@ -47,6 +48,13 @@ func (p *Protocol) SendString(s string) error {
 	// Copio el contenido del string 2 bytes mas adelante
 	copy(buf[2:], s)
 
+	return p.sendAll(buf)
+}
+
+// SendUint8 Send a single unsigned byte (0-255) through the socket
+// Returns error if fails
+func (p *Protocol) SendUint8(n uint8) error {
+	buf := []byte{n}
 	return p.sendAll(buf)
 }
 

@@ -1,18 +1,27 @@
 package common
 
 import (
+	"bufio"
 	"net"
+	"os"
+	"strings"
 	"sync/atomic"
 
 	"github.com/op/go-logging"
 )
 
+// BATCH_MAX_SIZE default value so that packets do not exceed 8kB
+// 1 bet = 61 bytes = (2 bytes * 6 fields) + aprox 49 bytes
+// 8192 bytes / 61 = aprox 135 bets
+const BATCH_MAX_SIZE = 135
+
 var log = logging.MustGetLogger("log")
 
 // ClientConfig Configuration used by the client
 type ClientConfig struct {
-	ID            string
-	ServerAddress string
+	ID             string
+	ServerAddress  string
+	BatchMaxAmount int
 }
 
 // Bet bet used by the client
@@ -27,19 +36,27 @@ type Bet struct {
 // Client Entity that encapsulates how
 type Client struct {
 	config     ClientConfig
-	bet        Bet
+	file       *os.File
 	protocol   *Protocol
 	wasStopped uint32
 }
 
 // NewClient Initializes a new client receiving the configuration
 // as a parameter
-func NewClient(config ClientConfig, bet Bet) *Client {
+func NewClient(config ClientConfig, file string) (*Client, error) {
+	fd, err := os.Open(file)
+	if err != nil {
+		log.Criticalf("action: open_file | result: fail | client_id: %v | error: %v",
+			config.ID,
+			err,
+		)
+		return nil, err
+	}
 	client := &Client{
 		config: config,
-		bet:    bet,
+		file:   fd,
 	}
-	return client
+	return client, nil
 }
 
 // CreateClientSocket Initializes client socket. In case of
@@ -58,43 +75,56 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
+// StartClient Starts the client loop that reads bets from a file,
+// sends them in batches to the server, waits for acknowledgements,
+// and stops gracefully when the input ends or an error occurs
 func (c *Client) StartClient() {
 	c.createClientSocket()
+	reader := bufio.NewReader(c.file)
+	totalBets := 0
 
-	err := c.sendBet(c.bet)
-	if err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
-		return
+	for {
+		batch, err := c.readNextBatch(reader)
+		if err != nil && err.Error() != "EOF" {
+			log.Errorf("action: read_file | result: fail | client_id: %v | error: %v",
+				c.config.ID,
+				err,
+			)
+			break
+		}
+
+		err = c.sendBatch(batch)
+		if err != nil {
+			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+				c.config.ID,
+				err,
+			)
+			return
+		}
+
+		log.Infof("action: apuesta_enviada | result: success | cantidad: %v", len(batch))
+
+		ack, err := c.waitAck()
+		if err != nil || ack != 0 {
+			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+				c.config.ID,
+				err,
+			)
+			return
+		}
+
+		totalBets += len(batch)
+		if len(batch) == 0 {
+			log.Infof("action: apuestas totales | result: success | cantidad: %v", totalBets)
+			break
+		}
 	}
 
-	ack, err := c.waitAck()
-	c.protocol.CloseWith(c.tryClose)
-
-	if err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
-		return
-	}
-
-	if ack != 0 {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v",
-			c.config.ID,
-		)
-		return
-	}
-
-	log.Infof("action: apuesta_enviada | result: success | dni: %s | numero: %s",
-		c.bet.Document,
-		c.bet.Number,
-	)
+	c.GracefulShutdown()
 }
 
 // GracefulShutdown Gracefully shutdown the server
+// Close sockets and file descriptors
 func (c *Client) GracefulShutdown() {
 	log.Infof("action: graceful_shutdown | result: in_progress | client_id: %v", c.config.ID)
 
@@ -103,11 +133,24 @@ func (c *Client) GracefulShutdown() {
 		c.protocol.CloseWith(c.tryClose)
 	}
 
+	if c.file != nil {
+		err := c.file.Close()
+		if err != nil {
+			log.Errorf("action: close_file | result: fail | client_id: %v | error: %v",
+				c.config.ID,
+				err,
+			)
+		}
+	}
+
 	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
 }
 
 // sendBet Sends the client ID and a bet using the protocol
 // Returns an error if fails
+//
+// [ ID (aprox 3 bytes) ][ FirstName (aprox 12 bytes) ][ LastName (aprox 12 bytes) ]
+// [ Document (8 bytes) ][ Birthdate (10 bytes) ][ Number (aprox 4 bytes) ]
 func (c *Client) sendBet(bet Bet) error {
 	fields := []string{
 		c.config.ID,
@@ -119,6 +162,24 @@ func (c *Client) sendBet(bet Bet) error {
 	}
 	for _, field := range fields {
 		if err := c.protocol.SendString(field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendBatch Sends a batch of bets to the server
+// First sends the size of the batch as an uint8, followed by the bets
+// Returns an error if any fails
+//
+// [ n bets (1 byte) ][ bet 1 ][ bet 2 ][ ... ][ bet n ]
+func (c *Client) sendBatch(bets []Bet) error {
+	if err := c.protocol.SendUint8(uint8(len(bets))); err != nil {
+		return err
+	}
+	for _, bet := range bets {
+		err := c.sendBet(bet)
+		if err != nil {
 			return err
 		}
 	}
@@ -154,4 +215,50 @@ func (c *Client) setWasStopped() {
 // getWasStopped Returns if the client was stopped
 func (c *Client) getWasStopped() bool {
 	return atomic.LoadUint32(&c.wasStopped) == 1
+}
+
+// readNextBet Reads the next line from the input file and parses it into a Bet
+// Returns a Bet or an error
+func (c *Client) readNextBet(reader *bufio.Reader) (Bet, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return Bet{}, err
+	}
+
+	line = strings.TrimSpace(line)
+	fields := strings.Split(line, ",")
+
+	return Bet{
+		FirstName: fields[0],
+		LastName:  fields[1],
+		Document:  fields[2],
+		Birthdate: fields[3],
+		Number:    fields[4],
+	}, nil
+}
+
+// readNextBatch Reads up to BatchMaxAmount bets from the file
+// Accumulates bets until reaching the limit or EOF
+// Returns the batch, the batch and EOF error or an error
+func (c *Client) readNextBatch(reader *bufio.Reader) ([]Bet, error) {
+	var batchSize int
+	if BATCH_MAX_SIZE < c.config.BatchMaxAmount {
+		batchSize = BATCH_MAX_SIZE
+	} else {
+		batchSize = c.config.BatchMaxAmount
+	}
+
+	bets := make([]Bet, 0, batchSize)
+	for len(bets) < batchSize {
+		bet, err := c.readNextBet(reader)
+		if err != nil {
+			if err.Error() == "EOF" {
+				return bets, err
+			}
+			return nil, err
+		}
+		bets = append(bets, bet)
+	}
+
+	return bets, nil
 }

@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/op/go-logging"
-	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 
 	"github.com/7574-sistemas-distribuidos/docker-compose-init/client/common"
@@ -34,8 +33,10 @@ func InitConfig() (*viper.Viper, error) {
 
 	// Add env variables supported
 	v.BindEnv("id")
+	v.BindEnv("file")
 	v.BindEnv("server", "address")
 	v.BindEnv("log", "level")
+	v.BindEnv("batch", "maxAmount")
 
 	// Try to read configuration from config file. If config file
 	// does not exists then ReadInConfig will fail but configuration
@@ -74,40 +75,12 @@ func InitLogger(logLevel string) error {
 // PrintConfig Print all the configuration parameters of the program.
 // For debugging purposes only
 func PrintConfig(v *viper.Viper) {
-	log.Infof("action: config | result: success | client_id: %s | server_address: %s | log_level: %s",
+	log.Infof("action: config | result: success | client_id: %s | file: %s | server_address: %s | log_level: %s | batch_max_amount: %s",
 		v.GetString("id"),
+		v.GetString("file"),
 		v.GetString("server.address"),
 		v.GetString("log.level"),
-	)
-}
-
-// InitBet Function that uses viper library to parse bet parameters.
-func InitBet() (*viper.Viper, error) {
-	v := viper.New()
-
-	v.AutomaticEnv()
-
-	keys := []string{"nombre", "apellido", "documento", "nacimiento", "numero"}
-	for _, key := range keys {
-		err := v.BindEnv(key)
-		if err != nil {
-			return v, errors.Wrapf(err, "Bet %s could not be read from env variables", key)
-		}
-	}
-
-	return v, nil
-}
-
-// PrintBet Print all the bet parameters of the program.
-// For debugging purposes only
-func PrintBet(v *viper.Viper) {
-	log.Infof(
-		"action: bet | result: success | first name: %s | last name: %s | document: %s | birthdate: %s | number: %s",
-		v.GetString("nombre"),
-		v.GetString("apellido"),
-		v.GetString("documento"),
-		v.GetString("nacimiento"),
-		v.GetString("numero"),
+		v.GetString("batch.maxAmount"),
 	)
 }
 
@@ -135,27 +108,14 @@ func main() {
 	PrintConfig(v)
 
 	clientConfig := common.ClientConfig{
-		ServerAddress: v.GetString("server.address"),
-		ID:            v.GetString("id"),
+		ServerAddress:  v.GetString("server.address"),
+		ID:             v.GetString("id"),
+		BatchMaxAmount: v.GetInt("batch.maxAmount"),
 	}
 
-	bet, err := InitBet()
-	if err != nil {
-		log.Criticalf("%s", err)
+	client, err := common.NewClient(clientConfig, v.GetString("file"))
+	if err == nil {
+		InitSignalHandler(client.GracefulShutdown)
+		client.StartClient()
 	}
-
-	// Print program bet with debugging purposes
-	PrintBet(bet)
-
-	clientBet := common.Bet{
-		FirstName: bet.GetString("nombre"),
-		LastName:  bet.GetString("apellido"),
-		Document:  bet.GetString("documento"),
-		Birthdate: bet.GetString("nacimiento"),
-		Number:    bet.GetString("numero"),
-	}
-
-	client := common.NewClient(clientConfig, clientBet)
-	InitSignalHandler(client.GracefulShutdown)
-	client.StartClient()
 }
