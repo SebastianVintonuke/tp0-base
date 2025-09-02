@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/op/go-logging"
 )
@@ -14,6 +15,13 @@ import (
 // 1 bet = 61 bytes = (2 bytes * 6 fields) + aprox 49 bytes
 // 8192 bytes / 61 = aprox 135 bets
 const BATCH_MAX_SIZE = 135
+
+const (
+	ErrorCode               = 0x00
+	AckCode                 = 0xFF
+	OperationCodeUploadBets = 0x01
+	OperationCodeGetWinners = 0x02
+)
 
 var log = logging.MustGetLogger("log")
 
@@ -75,11 +83,77 @@ func (c *Client) createClientSocket() error {
 	return nil
 }
 
-// StartClient Starts the client loop that reads bets from a file,
-// sends them in batches to the server, waits for acknowledgements,
-// and stops gracefully when the input ends or an error occurs
+// StartClient Starts the client
+// First upload bets to the server in batches,
+// then wait for server acknowledgement,
+// then try to get winners until success,
+// finally shutdown gracefully
+// If an unexpected error occurs shutdown gracefully
 func (c *Client) StartClient() {
 	c.createClientSocket()
+	err := c.protocol.SendUint8(uint8(OperationCodeUploadBets))
+	if err != nil {
+		c.GracefulShutdown()
+		return
+	}
+	ack, err := c.waitAck()
+	if err != nil || ack != AckCode {
+		c.GracefulShutdown()
+		return
+	}
+	c.OperationUpload()
+	c.GracefulShutdown()
+	for {
+		c.createClientSocket()
+		err = c.protocol.SendUint8(uint8(OperationCodeGetWinners))
+		if err != nil {
+			c.GracefulShutdown()
+			return
+		}
+		ack, err = c.waitAck()
+		if err != nil {
+			c.GracefulShutdown()
+			return
+		}
+		if ack == AckCode {
+			c.OperationGetWinner()
+			break
+		}
+		c.GracefulShutdown()
+		time.Sleep(1 * time.Second)
+	}
+
+	c.GracefulShutdown()
+}
+
+// GracefulShutdown Gracefully shutdown the server
+// Close sockets and file descriptors
+func (c *Client) GracefulShutdown() {
+	log.Infof("action: graceful_shutdown | result: in_progress | client_id: %v", c.config.ID)
+
+	c.setWasStopped()
+	if c.protocol != nil {
+		c.protocol.CloseWith(c.tryClose)
+	}
+
+	if c.file != nil {
+		err := c.file.Close()
+		if err != nil {
+			log.Errorf("action: close_file | result: fail | client_id: %v | error: %v",
+				c.config.ID,
+				err,
+			)
+		}
+		c.file = nil
+	}
+
+	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
+}
+
+// OperationUpload Reads bets from the input file in batches and sends them to the server,
+// waits for acknowledgements after each batch, logs success or errors,
+// stops when all bets are sent or in an error
+func (c *Client) OperationUpload() {
 	reader := bufio.NewReader(c.file)
 	totalBets := 0
 
@@ -105,7 +179,7 @@ func (c *Client) StartClient() {
 		log.Infof("action: apuesta_enviada | result: success | cantidad: %v", len(batch))
 
 		ack, err := c.waitAck()
-		if err != nil || ack != 0 {
+		if err != nil || ack != AckCode {
 			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
 				c.config.ID,
 				err,
@@ -119,31 +193,27 @@ func (c *Client) StartClient() {
 			break
 		}
 	}
-
-	c.GracefulShutdown()
 }
 
-// GracefulShutdown Gracefully shutdown the server
-// Close sockets and file descriptors
-func (c *Client) GracefulShutdown() {
-	log.Infof("action: graceful_shutdown | result: in_progress | client_id: %v", c.config.ID)
-
-	c.setWasStopped()
-	if c.protocol != nil {
-		c.protocol.CloseWith(c.tryClose)
+// OperationGetWinner Requests winners from the server for this client's agency
+// First send the agency ID, then waits for the winners
+// Logs the number of winners or errors if error
+func (c *Client) OperationGetWinner() {
+	err := c.protocol.SendString(c.config.ID)
+	if err != nil {
+		log.Errorf("action: send_agency | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return
 	}
-
-	if c.file != nil {
-		err := c.file.Close()
-		if err != nil {
-			log.Errorf("action: close_file | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
-		}
+	winners, err := c.waitWinners()
+	if err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return
 	}
-
-	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
+	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v",
+		len(winners),
+	)
 }
 
 // sendBet Sends the client ID and a bet using the protocol
@@ -184,6 +254,26 @@ func (c *Client) sendBatch(bets []Bet) error {
 		}
 	}
 	return nil
+}
+
+// waitWinners Waits for the list of winners from the server
+// Returns the List of winning documents or an error
+func (c *Client) waitWinners() ([]string, error) {
+	lenWinners, err := c.protocol.WaitUint8()
+	if err != nil {
+		return nil, err
+	}
+
+	winners := make([]string, 0, lenWinners)
+	for i := 0; i < int(lenWinners); i++ {
+		winner, err := c.protocol.WaitString()
+		if err != nil {
+			return nil, err
+		}
+		winners = append(winners, winner)
+	}
+
+	return winners, nil
 }
 
 // waitAck Waits for an acknowledgement byte from the server

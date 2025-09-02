@@ -15,6 +15,20 @@ class Protocol:
         # pero la responsabilidad del cierre y del registro de los logs en el servidor
         closure_to_close(self._socket)
 
+    def send_string(self, text: str):
+        """
+        Sends a string through the socket
+        
+        First, sends 2 bytes (big endian) that indicate the length, then sends the payload of that length
+        If the string is too long raise a ValueError exception
+        """
+        payload = text.encode("utf-8")
+        payload_size = len(payload)
+        if payload_size > 0xFFFF:
+            raise ValueError("String too long, must fit in 2 bytes")
+        size_bytes = payload_size.to_bytes(2, byteorder="big")
+        self.__send_all(size_bytes + payload)
+
     def wait_string(self):
         """
         Receive a string from the socket
