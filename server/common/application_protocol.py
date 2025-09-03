@@ -1,7 +1,7 @@
 import logging
 
 from .protocol import Protocol
-from .utils import Bet, store_bets, load_bets, has_won
+from .utils import Bet, has_won
 
 ERROR_CODE = 0x00
 ACK_CODE = 0xFF
@@ -10,8 +10,9 @@ OPERATION_CODE_UPLOAD_BETS = 0x01
 OPERATION_CODE_GET_WINNERS = 0x02
 
 class ApplicationProtocol:
-    def __init__(self, socket):
+    def __init__(self, socket, bets_storage):
         self._protocol = Protocol(socket)
+        self._bets_storage = bets_storage
 
     def close_with(self, closure_to_close):
         """
@@ -28,7 +29,7 @@ class ApplicationProtocol:
             - Get winners (__operation_get_winner)
 
         Args:
-            winners_are_ready (bool): Indicates if the winners are ready
+            winners_are_ready (Barrier): Indicates if the winners are ready
 
         Raises:
             ValueError: If a client tries to upload bets after winners are ready
@@ -37,16 +38,14 @@ class ApplicationProtocol:
         operation_code = self._protocol.wait_uint8()
 
         if operation_code == OPERATION_CODE_UPLOAD_BETS:
-            if winners_are_ready:
-                self.__send_error()
-                raise ValueError(f"A client tries upload bets when the winners are ready")
             self.__send_ack()
             self.__operation_upload()
 
         elif operation_code == OPERATION_CODE_GET_WINNERS:
-            if not winners_are_ready:
-                self.__send_error()
-                raise ValueError(f"A client tries to get the winners when are not ready")
+            leader = winners_are_ready.wait()
+            if leader == 0:
+                logging.info('action: sorteo | result: success')
+
             self.__send_ack()
             self.__operation_get_winner()
 
@@ -66,7 +65,7 @@ class ApplicationProtocol:
             while batch_size != 0:
                 batch = self.__wait_batch(batch_size)
                 logging.info(f"action: apuesta_recibida | result: success | cantidad: {len(batch)}")
-                store_bets(batch)
+                self._bets_storage.thread_safe_store_bets(batch)
                 self.__send_ack()
                 batch_size = self.__wait_batch_size()
             self.__send_ack()
@@ -85,7 +84,7 @@ class ApplicationProtocol:
         """
         agency_id = int(self._protocol.wait_string())
         winners = []
-        for bet in load_bets():
+        for bet in self._bets_storage.thread_safe_load_bets():
             if has_won(bet) and bet.agency == agency_id:
                 winners.append(str(bet.document))
         self.__send_winners(winners)

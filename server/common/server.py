@@ -1,8 +1,10 @@
 import socket
 import logging
 import errno
+import threading
 
 from .application_protocol import ApplicationProtocol
+from .sync_utils import ThreadSafeBetsStorage
 
 class Server:
     @staticmethod
@@ -27,65 +29,60 @@ class Server:
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
-        self._clients_amount = int(clients_amount)
-        self._client_count = 0
-        self._client_protocol = None
         self._was_stopped = False
-        self.winners_are_ready = False
+        self._clients = []
+        self.winners_are_ready = threading.Barrier(int(clients_amount))
+        self.thread_safe_bets_storage = ThreadSafeBetsStorage()
 
     def run(self):
         """
-        Dummy Server loop
+        Multithreaded Server loop
 
-        Server that accept a new connections and establishes a
-        communication with a client. After client with communucation
-        finishes, servers starts to accept new connections again
-
-        If enough clients uploaded their bets, the winners are available
+        Server that accepts new connections and spawns a new thread
+        for each client. Each client is handled independently.
         """
 
         while not self._was_stopped:
+            self.__cleanup_client_threads()
             client_socket = self.__accept_new_connection()
             if client_socket:
-                self._client_protocol = ApplicationProtocol(client_socket)
-                self.__handle_client_connection()
-
-            if self._client_count == self._clients_amount:
-                logging.info('action: sorteo | result: success')
-                self.winners_are_ready = True
+                client_thread = threading.Thread(target=self.__handle_client_connection, args=(client_socket,))
+                self._clients.append((client_thread, client_socket))
+                client_thread.start()
 
     def graceful_shutdown(self, _signal_number, _current_stack_frame):
         """
         On a signal, gracefully shutdown the server
 
-        Stops the main loop, closes the server socket and, if present, the active client socket
+        Stops the main loop and closes the server socket finally close and join the clients
         """
         logging.info('action: graceful_shutdown | result: in_progress')
 
         self._was_stopped = True
         self.__try_close(self._server_socket, 'server_socket')
-        if self._client_protocol:
-            closure_to_close = lambda client_socket: self.__try_close(client_socket, 'client_socket')
-            self._client_protocol.close_with(closure_to_close)
+
+        for client_thread, client_socket in self._clients:
+            self.__try_close(client_socket, 'client_socket')
+            client_thread.join()
 
         logging.info('action: exit | result: success')
 
-    def __handle_client_connection(self):
+    def __handle_client_connection(self, client_socket):
         """
-        Read message from a specific client socket and closes the socket
-        If operation completes without errors increment the client counter
+        Handle a client connection in a dedicated thread
+
+        Read message, process it and close the socket
         """
+        client_protocol = ApplicationProtocol(client_socket, self.thread_safe_bets_storage)
+
         try:
-            self._client_protocol.wait_operation(self.winners_are_ready)
-            self._client_count += 1
-        except ValueError as e:
-            if "A client tries to get the winners when are not ready" not in str(e):
-                logging.error(f"action: error | result: fail | error: {e}")
+            client_protocol.wait_operation(self.winners_are_ready)
+
         except Exception as e:
             logging.error(f"action: error | result: fail | error: {e}")
         finally:
-            closure_to_close = lambda client_socket: self.__try_close(client_socket, 'client_socket')
-            self._client_protocol.close_with(closure_to_close)
+            closure_to_close = lambda sock: self.__try_close(sock, 'client_socket')
+            client_protocol.close_with(closure_to_close)
 
     def __accept_new_connection(self):
         """
@@ -106,3 +103,16 @@ class Server:
                 return None  # The server socket was closed by the graceful shutdown
             else:
                 logging.info(f'action: accept_connections | result: fail | error: {e}')
+
+    def __cleanup_client_threads(self):
+        """
+        Join the finished threads, if it finished, the socket was already closed
+        To free resources we just need to join the threads and clean the references
+        """
+        alive_clients = []
+        for thread, sock in self._clients:
+            if thread.is_alive():
+                alive_clients.append((thread, sock))
+            else:
+                thread.join()
+        self._clients = alive_clients

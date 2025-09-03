@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/op/go-logging"
 )
@@ -73,11 +72,7 @@ func NewClient(config ClientConfig, file string) (*Client, error) {
 func (c *Client) createClientSocket() error {
 	conn, err := net.Dial("tcp", c.config.ServerAddress)
 	if err != nil {
-		log.Criticalf(
-			"action: connect | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
+		log.Criticalf("action: connect | result: fail | error: %v", err)
 	}
 	c.protocol = NewProtocol(conn)
 	return nil
@@ -91,6 +86,7 @@ func (c *Client) createClientSocket() error {
 // If an unexpected error occurs shutdown gracefully
 func (c *Client) StartClient() {
 	c.createClientSocket()
+
 	err := c.protocol.SendUint8(uint8(OperationCodeUploadBets))
 	if err != nil {
 		c.GracefulShutdown()
@@ -102,26 +98,20 @@ func (c *Client) StartClient() {
 		return
 	}
 	c.OperationUpload()
-	c.GracefulShutdown()
-	for {
-		c.createClientSocket()
-		err = c.protocol.SendUint8(uint8(OperationCodeGetWinners))
-		if err != nil {
-			c.GracefulShutdown()
-			return
-		}
-		ack, err = c.waitAck()
-		if err != nil {
-			c.GracefulShutdown()
-			return
-		}
-		if ack == AckCode {
-			c.OperationGetWinner()
-			break
-		}
+
+    c.GracefulShutdown()
+    c.createClientSocket()
+
+    err = c.protocol.SendUint8(uint8(OperationCodeGetWinners))
+    if err != nil {
+        return
+    }
+    ack, err = c.waitAck()
+    if err != nil || ack != AckCode {
 		c.GracefulShutdown()
-		time.Sleep(1 * time.Second)
+		return
 	}
+    c.OperationGetWinner()
 
 	c.GracefulShutdown()
 }
@@ -129,7 +119,7 @@ func (c *Client) StartClient() {
 // GracefulShutdown Gracefully shutdown the server
 // Close sockets and file descriptors
 func (c *Client) GracefulShutdown() {
-	log.Infof("action: graceful_shutdown | result: in_progress | client_id: %v", c.config.ID)
+	log.Infof("action: graceful_shutdown | result: in_progress")
 
 	c.setWasStopped()
 	if c.protocol != nil {
@@ -139,15 +129,12 @@ func (c *Client) GracefulShutdown() {
 	if c.file != nil {
 		err := c.file.Close()
 		if err != nil {
-			log.Errorf("action: close_file | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
+			log.Errorf("action: close_file | result: fail | error: %v", err)
 		}
 		c.file = nil
 	}
 
-	log.Infof("action: exit | result: success | client_id: %v", c.config.ID)
+	log.Infof("action: exit | result: success")
 }
 
 // OperationUpload Reads bets from the input file in batches and sends them to the server,
@@ -160,19 +147,13 @@ func (c *Client) OperationUpload() {
 	for {
 		batch, err := c.readNextBatch(reader)
 		if err != nil && err.Error() != "EOF" {
-			log.Errorf("action: read_file | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
+			log.Errorf("action: read_file | result: fail | error: %v", err)
 			break
 		}
 
 		err = c.sendBatch(batch)
 		if err != nil {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
+			log.Errorf("action: apuesta_enviada | result: fail | error: %v", err)
 			return
 		}
 
@@ -180,10 +161,7 @@ func (c *Client) OperationUpload() {
 
 		ack, err := c.waitAck()
 		if err != nil || ack != AckCode {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
+			log.Errorf("action: apuesta_enviada | result: fail | error: %v", err)
 			return
 		}
 
@@ -201,14 +179,12 @@ func (c *Client) OperationUpload() {
 func (c *Client) OperationGetWinner() {
 	err := c.protocol.SendString(c.config.ID)
 	if err != nil {
-		log.Errorf("action: send_agency | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
+		log.Errorf("action: send_agency | result: fail | error: %v", err)
 		return
 	}
 	winners, err := c.waitWinners()
 	if err != nil {
-		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
+		log.Errorf("action: consulta_ganadores | result: fail | error: %v", err)
 		return
 	}
 	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v",
@@ -286,15 +262,10 @@ func (c *Client) waitAck() (uint8, error) {
 func (c *Client) tryClose(aSocket net.Conn) {
 	err := aSocket.Close()
 	if err != nil {
-		log.Errorf("action: close_socket | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
+		log.Errorf("action: close_socket | result: fail | error: %v", err)
 		return
 	}
-	log.Infof("action: close_socket | result: success | client_id: %v",
-		c.config.ID,
-	)
+	log.Infof("action: close_socket | result: success")
 }
 
 // setWasStopped Marks the client as stopped
