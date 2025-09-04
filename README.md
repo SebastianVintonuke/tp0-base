@@ -178,3 +178,172 @@ Se espera que se redacte una sección del README en donde se indique cómo ejecu
 Se proveen [pruebas automáticas](https://github.com/7574-sistemas-distribuidos/tp0-tests) de caja negra. Se exige que la resolución de los ejercicios pase tales pruebas, o en su defecto que las discrepancias sean justificadas y discutidas con los docentes antes del día de la entrega. El incumplimiento de las pruebas es condición de desaprobación, pero su cumplimiento no es suficiente para la aprobación. Respetar las entradas de log planteadas en los ejercicios, pues son las que se chequean en cada uno de los tests.
 
 La corrección personal tendrá en cuenta la calidad del código entregado y casos de error posibles, se manifiesten o no durante la ejecución del trabajo práctico. Se pide a los alumnos leer atentamente y **tener en cuenta** los criterios de corrección informados  [en el campus](https://campusgrado.fi.uba.ar/mod/page/view.php?id=73393).
+
+# Informe
+
+Aspecto importantes a lo largo de todas las soluciones provistas:
+
+- Se documentaron los nuevos métodos y se modificó la documentación de aquellos métodos para los que había quedado desactualizada
+- Se eliminaron o modificaron las secciones de los ejercicios anteriores que no resultaban relevantes en el ejercicio actual
+  - Ej: loop amount en el cliente, variables de entorno desactualizadas, logs desactualizados
+- Se intentó que las soluciones fueran lo más incrementales posible, evitando realizar grandes refactors
+
+### Ejercicio N°1:
+
+Cómo ejecutar:
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Se realizan validaciones mínimas de los parámetros, que existan y que la cantidad sea numérica
+- Se usó bash scripting, no se usó go ni python
+- Se escribe el archivo usando echo
+- Se usó el docker-compose-dev.yaml como modelo
+- Se parametrizó la definición de clientes para que sea dinámica en función de la cantidad pasada por parámetro
+
+### Ejercicio N°2:
+
+Cómo ejecutar:
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Se modificó el script generar-compose para que contemplara los archivos config en el servidor y en el cliente usando volúmenes
+- Se agregó un dockerignore en el servidor para ignorar el config.ini ya que el Dockerfile sube todo el contenido
+- Se modificó el Dockerfile para que no suba el config.yaml aprovechando que lo hacía selectivamente
+
+### Ejercicio N°3:
+
+Cómo ejecutar:
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+
+./validar-echo-server.sh
+```
+
+Aspectos más importantes de la solución provista:
+
+- Usando bash scripting se lee la IP y el puerto del servidor del archivo config.ini
+- Se ejecuta docker run --rm --network tp0_testing_net alpine:latest sh -c
+  - --rm para eliminar el contenedor al finalizar
+  - --network tp0_testing_net para ejecutarlo en la misma red
+  - alpine:latest como imagen por ser ligera
+  - sh -c para ejecutar un string como comando en la shell
+- Dentro se ejecuta un comando formateado con el mensaje y se envía al servidor usando netcat
+
+### Ejercicio N°4:
+
+Cómo ejecutar:
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Se agregaron métodos graceful_shutdown tanto en el servidor como en el cliente que liberan los recursos
+- En el servidor se usó la librería signal para bindear la señal del SIGTERM a la función
+- En Go se usó un channel para bindear la señal del SIGTERM
+  - Se usa un bool en el estado interno para verificar si el cliente se cerró y saber si seguir loopeando
+  - La modificación de ese bool por el SIGTERM se realiza de forma atómica
+
+### Ejercicio N°5:
+
+Cómo ejecutar:
+
+`generar-compose` hardcodea un batch para enviar en las variables de entorno
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Primero se fijaron los problemas mencionados de short-read y short-write, además se cherry-pickearon a las soluciones anteriores
+  - Para esto se crearon funciones wrapper de send y recv llamadas send_all y recv_all que loopean hasta enviar todo o encontrar un error
+- Se implementó un protocolo en dos capas
+  - La capa inferior permite datos básicos send_uint8 y send_string
+    - Los strings se envían usando un protocolo de campo variable, los primeros 2 bytes se usan para el tamaño en formato big endian seguido por el string
+- La capa superior permite datos del dominio send_bet y send_ack
+  - Cada campo de la bet se envía usando el send_string definido anteriormente
+  - Se notifica la recepción con un ack, usando send_uint8, un byte en 0 o 1
+
+### Ejercicio N°6:
+
+Cómo ejecutar:
+
+Se necesitan datasets consistentes con la cantidad de clientes guardados en `./.data/agency-${i}.csv`
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Se modificó el generar-compose para que contemplara los datasets usando volúmenes
+  - los datasets se leen de `./.data/agency-${i}.csv` con `i`, el número de cliente
+- No se carga el archivo en memoria, se lee línea a línea y se cierra el file descriptor en el shutdown
+- Se extendió el protocolo para enviar batches
+  - Primero el cliente indica la cantidad de bets en cada batch
+  - Se envía y procesa ese batch y el servidor envía un ack al finalizar
+  - Para indicar que no hay más batches para procesar el cliente envía deliberadamente un batch vacío
+  - El servidor envía un ack para indicar que entendió que no hay más batches
+  - Si ocurre un error el servidor trata de notificar al cliente con un código de error
+- En cuanto al manejo del límite de 8kB, usando los tamaños manejados por el protocolo y una aproximación de los valores promedio para ciertos campos variables de las bets (por ejemplo el nombre), estimé un tamaño máximo de batch de 135 bets. Es una aproximación conservadora, no busca ser perfecta, de por sí el protocolo es simple pero no óptimo
+
+### Ejercicio N°7:
+
+Cómo ejecutar:
+
+Se necesitan datasets consistentes con la cantidad de clientes guardados en `./.data/agency-${i}.csv`
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Se extendió el protocolo para soportar diferentes operaciones
+  - Enviar batches de bets del cliente al servidor
+    - Misma ya implementada, su código de operación es 1
+  - Enviar array de documentos del servidor al cliente
+    - Los documentos se envían de forma similar a bet, 1 byte para la cantidad seguido de esa cantidad de strings
+- Una vez los clientes suben sus apuestas, para esperar los resultados consultan reiteradamente (busy wait) al servidor hasta obtenerlos
+  - Si bien esta solución no es óptima porque desperdicia recursos, considero que el objetivo del ejercicio 7 es extender el protocolo para soportar las diferentes operaciones de subida de bets y bajada de resultados más que coordinar cómo se utilizan las mismas. La solución es provisoria para pasar los tests y se propone una implementación mejor en el ejercicio 8
+
+### Ejercicio N°8:
+
+Cómo ejecutar:
+
+Se necesitan datasets consistentes con la cantidad de clientes guardados en `./.data/agency-${i}.csv`
+```
+./generar-compose.sh <Nombre del archivo de salida> <Cantidad de clientes>
+
+make docker-compose-up
+```
+
+Aspectos más importantes de la solución provista:
+
+- Del lado del cliente ya no se hace un busy wait para obtener los resultados, se realizan las dos operaciones seguidas
+- En cuanto a herramientas de sincronización implementadas:
+  - Se implementó ThreadSafeBetsStorage, para wrapear de forma thread safe las operaciones `store_bets` y `load-bets` provistas, es un read-write lock con prioridad de lectura
+  - Se usó una barrier con el número de clientes como parámetro para sincronizar el acceso a los resultados, solo el thread líder imprime el log del sorteo
+- Se usó un modelo de threads a pesar de las limitaciones propias del lenguaje, si bien el GIL no es ideal, al ser un caso con altas interrupciones de I/O (que sí se ejecutan fuera del GIL) no resulta una desventaja considerable
+- Se realiza un correcto uso y liberación de recursos
+  - Cada thread cierra su socket al terminar su operación
+  - En cada loop de accept del servidor se joinean los threads que terminaron y se eliminan sus referencias
+  - Si se necesita cerrar gracefully (por ejemplo por una SIGTERM), el hilo principal conserva una referencia a los sockets, los cierra y espera el join de cada hilo
